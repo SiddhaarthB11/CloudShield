@@ -1,0 +1,463 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "CloudShield disposable Fargate sandbox with synthetic PostgreSQL data",
+  "Parameters": {
+    "ImageUri": {
+      "Type": "String",
+      "AllowedPattern": "[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/[a-z0-9._/-]+@sha256:[a-f0-9]{64}"
+    },
+    "RepositoryArn": {
+      "Type": "String"
+    },
+    "SourceRevision": {
+      "Type": "String",
+      "AllowedPattern": "[a-f0-9]{40}"
+    },
+    "ClientCidr": {
+      "Type": "String",
+      "AllowedPattern": "[0-9.]+/32"
+    }
+  },
+  "Resources": {
+    "Vpc": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": "10.42.0.0/16",
+        "EnableDnsHostnames": true,
+        "EnableDnsSupport": true
+      }
+    },
+    "Gateway": {
+      "Type": "AWS::EC2::InternetGateway"
+    },
+    "GatewayAttachment": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "InternetGatewayId": {
+          "Ref": "Gateway"
+        }
+      }
+    },
+    "Subnet": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "CidrBlock": "10.42.1.0/24",
+        "MapPublicIpOnLaunch": true
+      }
+    },
+    "Routes": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      }
+    },
+    "DefaultRoute": {
+      "Type": "AWS::EC2::Route",
+      "DependsOn": "GatewayAttachment",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "Routes"
+        },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": {
+          "Ref": "Gateway"
+        }
+      }
+    },
+    "SubnetRoutes": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "Subnet"
+        },
+        "RouteTableId": {
+          "Ref": "Routes"
+        }
+      }
+    },
+    "SecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "CloudShield API access from the configured client",
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 8000,
+            "ToPort": 8000,
+            "CidrIp": {
+              "Ref": "ClientCidr"
+            }
+          }
+        ]
+      }
+    },
+    "DatabasePassword": {
+      "Type": "AWS::SecretsManager::Secret",
+      "Properties": {
+        "Description": "CloudShield disposable database password",
+        "GenerateSecretString": {
+          "PasswordLength": 32,
+          "ExcludePunctuation": true
+        }
+      }
+    },
+    "AdminPassword": {
+      "Type": "AWS::SecretsManager::Secret",
+      "Properties": {
+        "Description": "CloudShield disposable admin password",
+        "GenerateSecretString": {
+          "PasswordLength": 32,
+          "ExcludePunctuation": true
+        }
+      }
+    },
+    "SigningKey": {
+      "Type": "AWS::SecretsManager::Secret",
+      "Properties": {
+        "Description": "CloudShield disposable signing key",
+        "GenerateSecretString": {
+          "PasswordLength": 32,
+          "ExcludePunctuation": true
+        }
+      }
+    },
+    "Logs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 3
+      }
+    },
+    "ExecutionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ecs-tasks.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "CloudShieldLabExecution",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ecr:GetAuthorizationToken"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ecr:BatchCheckLayerAvailability",
+                    "ecr:GetDownloadUrlForLayer",
+                    "ecr:BatchGetImage"
+                  ],
+                  "Resource": {
+                    "Ref": "RepositoryArn"
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "Logs",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "secretsmanager:GetSecretValue"
+                  ],
+                  "Resource": [
+                    {
+                      "Ref": "DatabasePassword"
+                    },
+                    {
+                      "Ref": "AdminPassword"
+                    },
+                    {
+                      "Ref": "SigningKey"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "Cluster": {
+      "Type": "AWS::ECS::Cluster",
+      "Properties": {
+        "ClusterSettings": [
+          {
+            "Name": "containerInsights",
+            "Value": "enabled"
+          }
+        ]
+      }
+    },
+    "Task": {
+      "Type": "AWS::ECS::TaskDefinition",
+      "Properties": {
+        "Cpu": "512",
+        "Memory": "1024",
+        "NetworkMode": "awsvpc",
+        "RequiresCompatibilities": [
+          "FARGATE"
+        ],
+        "RuntimePlatform": {
+          "CpuArchitecture": "X86_64",
+          "OperatingSystemFamily": "LINUX"
+        },
+        "ExecutionRoleArn": {
+          "Fn::GetAtt": [
+            "ExecutionRole",
+            "Arn"
+          ]
+        },
+        "ContainerDefinitions": [
+          {
+            "Name": "db",
+            "Image": "postgres:18",
+            "Essential": true,
+            "Environment": [
+              {
+                "Name": "POSTGRES_USER",
+                "Value": "postgres"
+              },
+              {
+                "Name": "POSTGRES_DB",
+                "Value": "app"
+              }
+            ],
+            "Secrets": [
+              {
+                "Name": "POSTGRES_PASSWORD",
+                "ValueFrom": {
+                  "Ref": "DatabasePassword"
+                }
+              }
+            ],
+            "HealthCheck": {
+              "Command": [
+                "CMD-SHELL",
+                "pg_isready -U postgres -d app"
+              ],
+              "Interval": 5,
+              "Timeout": 3,
+              "Retries": 12,
+              "StartPeriod": 10
+            },
+            "LogConfiguration": {
+              "LogDriver": "awslogs",
+              "Options": {
+                "awslogs-group": {
+                  "Ref": "Logs"
+                },
+                "awslogs-region": {
+                  "Ref": "AWS::Region"
+                },
+                "awslogs-stream-prefix": "db"
+              }
+            }
+          },
+          {
+            "Name": "backend",
+            "Image": {
+              "Ref": "ImageUri"
+            },
+            "Essential": true,
+            "DependsOn": [
+              {
+                "ContainerName": "db",
+                "Condition": "HEALTHY"
+              }
+            ],
+            "EntryPoint": [
+              "/bin/sh",
+              "-c"
+            ],
+            "Command": [
+              "set -eu; export DATABASE_URL=\"postgresql://postgres:${DB_PASSWORD}@127.0.0.1:5432/app\"; bash scripts/prestart.sh; export DATABASE_URL=\"postgresql://postgres:${DB_PASSWORD}@${DB_HOST}:5432/app\"; exec fastapi run --workers 1"
+            ],
+            "Environment": [
+              {
+                "Name": "PROJECT_NAME",
+                "Value": "CloudShield AWS Lab"
+              },
+              {
+                "Name": "DB_HOST",
+                "Value": "127.0.0.1"
+              },
+              {
+                "Name": "FIRST_SUPERUSER",
+                "Value": "admin@example.com"
+              }
+            ],
+            "Secrets": [
+              {
+                "Name": "DB_PASSWORD",
+                "ValueFrom": {
+                  "Ref": "DatabasePassword"
+                }
+              },
+              {
+                "Name": "FIRST_SUPERUSER_PASSWORD",
+                "ValueFrom": {
+                  "Ref": "AdminPassword"
+                }
+              },
+              {
+                "Name": "SECRET_KEY",
+                "ValueFrom": {
+                  "Ref": "SigningKey"
+                }
+              }
+            ],
+            "PortMappings": [
+              {
+                "ContainerPort": 8000,
+                "Protocol": "tcp"
+              }
+            ],
+            "HealthCheck": {
+              "Command": [
+                "CMD-SHELL",
+                "curl -fsS http://localhost:8000/api/v1/utils/health-check/"
+              ],
+              "Interval": 10,
+              "Timeout": 5,
+              "Retries": 3,
+              "StartPeriod": 90
+            },
+            "LogConfiguration": {
+              "LogDriver": "awslogs",
+              "Options": {
+                "awslogs-group": {
+                  "Ref": "Logs"
+                },
+                "awslogs-region": {
+                  "Ref": "AWS::Region"
+                },
+                "awslogs-stream-prefix": "api"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "Service": {
+      "Type": "AWS::ECS::Service",
+      "DependsOn": [
+        "DefaultRoute",
+        "SubnetRoutes"
+      ],
+      "Properties": {
+        "Cluster": {
+          "Ref": "Cluster"
+        },
+        "DesiredCount": 1,
+        "LaunchType": "FARGATE",
+        "TaskDefinition": {
+          "Ref": "Task"
+        },
+        "DeploymentConfiguration": {
+          "MinimumHealthyPercent": 0,
+          "MaximumPercent": 100,
+          "DeploymentCircuitBreaker": {
+            "Enable": true,
+            "Rollback": true
+          }
+        },
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "AssignPublicIp": "ENABLED",
+            "SecurityGroups": [
+              {
+                "Ref": "SecurityGroup"
+              }
+            ],
+            "Subnets": [
+              {
+                "Ref": "Subnet"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "Cluster": {
+      "Value": {
+        "Fn::GetAtt": [
+          "Cluster",
+          "Arn"
+        ]
+      }
+    },
+    "Service": {
+      "Value": {
+        "Ref": "Service"
+      }
+    },
+    "ApprovedTaskDefinition": {
+      "Value": {
+        "Ref": "Task"
+      }
+    },
+    "LogGroup": {
+      "Value": {
+        "Ref": "Logs"
+      }
+    },
+    "AdminSecret": {
+      "Value": {
+        "Ref": "AdminPassword"
+      }
+    },
+    "SourceRevision": {
+      "Value": {
+        "Ref": "SourceRevision"
+      }
+    },
+    "ImageUri": {
+      "Value": {
+        "Ref": "ImageUri"
+      }
+    },
+    "SecurityGroup": {
+      "Value": {
+        "Ref": "SecurityGroup"
+      }
+    }
+  }
+}

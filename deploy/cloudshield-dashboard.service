@@ -1,0 +1,15 @@
+[Unit]
+Description=CloudShield local dashboard
+After=network-online.target cloudshield-worker.service
+Wants=cloudshield-worker.service
+
+[Service]
+Type=simple
+User=cloudshield
+WorkingDirectory=/opt/cloudshield
+ExecStart=/opt/cloudshield/.venv/bin/python -m cloudshield serve --no-worker
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

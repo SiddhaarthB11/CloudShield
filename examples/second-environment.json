@@ -1,0 +1,6 @@
+{
+  "DB_HOST": "staging-db",
+  "DB_PORT": 5432,
+  "DB_NAME": "app",
+  "DB_SECRET_REF": "staging/postgres"
+}

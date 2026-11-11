@@ -1,0 +1,15 @@
+diff --git a/backend/app/api/routes/users.py b/backend/app/api/routes/users.py
+--- a/backend/app/api/routes/users.py
++++ b/backend/app/api/routes/users.py
+@@ -124,11 +124,8 @@
+ @router.get("/me", response_model=UserPublic)
+ def read_user_me(current_user: CurrentUser) -> Any:
+     """
+     Get current user.
+     """
+-    from time import sleep
+-
+-    sleep(0.7)
+     return current_user
+ 
+ 

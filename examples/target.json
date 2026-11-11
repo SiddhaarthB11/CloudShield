@@ -1,0 +1,15 @@
+{
+  "base_url": "http://127.0.0.1:18020",
+  "python_version": "3.14",
+  "source_dir": "../../fastapi-target/backend/app",
+  "compose_file": "../ci/compose.yml",
+  "compose_project": "cloudshield-demo",
+  "environment_config": "reference.json",
+  "credentials_file": "../.env.phase1.local",
+  "robot_suite": "../suites/target.robot",
+  "required_robot_checks": [
+    "api-health",
+    "anonymous-user-denied",
+    "database-backed-user-lookup"
+  ]
+}

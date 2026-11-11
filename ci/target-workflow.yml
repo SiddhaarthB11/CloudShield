@@ -1,0 +1,155 @@
+name: CloudShield
+
+on:
+  push:
+    branches:
+      - 'cloudshield-lab/**'
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudshield-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repair-push:
+    if: github.event_name == 'push' && !github.event.deleted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    environment: cloudshield-lab
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the pushed commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: target
+          persist-credentials: false
+
+      - &runner
+        name: Check out the pinned CloudShield runner
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.CLOUDSHIELD_REPOSITORY }}
+          ref: ${{ vars.CLOUDSHIELD_REVISION }}
+          path: cloudshield
+          persist-credentials: false
+
+      - &python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+
+      - &install
+        name: Verify the runner revision and install Robot Framework
+        working-directory: cloudshield
+        env:
+          RUNNER_SHA: ${{ vars.CLOUDSHIELD_REVISION }}
+        run: |
+          set -euo pipefail
+          [[ "$RUNNER_SHA" =~ ^[a-f0-9]{40}$ && "$(git rev-parse HEAD)" == "$RUNNER_SHA" ]] || {
+            echo 'Set CLOUDSHIELD_REVISION to the full commit SHA of the runner.'
+            exit 2
+          }
+          python -m pip install -r requirements.txt
+
+      - name: Test the pushed commit and attempt a reviewed repair
+        working-directory: cloudshield
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$GEMINI_API_KEY" || { echo 'Configure the cloudshield-lab environment Gemini secret.'; exit 2; }
+          python -m cloudshield ci --repo ../target --revision "$GITHUB_SHA" --gemini \
+            --allow-path backend/app/api/routes/utils.py | tee ci-result.json
+
+      - name: Publish the exact verified repair
+        working-directory: cloudshield
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "$(jq -r .status ci-result.json)" != verified ]]; then
+            exit 0
+          fi
+          if [[ "$GITHUB_REF" != refs/heads/cloudshield-lab/* ]]; then
+            echo 'Repair publication requires a trusted lab branch.'
+            exit 2
+          fi
+          authorization=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$authorization"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL}/.extraheader"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $authorization"
+          base_ref="refs/remotes/origin/${GITHUB_REF#refs/heads/}"
+          git -C ../target fetch --no-tags origin "+$GITHUB_REF:$base_ref"
+          python -m cloudshield publish "$(jq -r .repair_report ci-result.json)" \
+            --repo ../target --base-ref "$base_ref" | tee publication-result.json
+          branch=$(jq -r .branch publication-result.json)
+          remote_revision=$(git -C ../target ls-remote --exit-code origin "$GITHUB_REF" | cut -f1)
+          if [[ "$remote_revision" != "$GITHUB_SHA" ]]; then
+            echo 'The source branch moved while publishing. A new run must verify the new commit.'
+            exit 2
+          fi
+          git -C ../target push origin "refs/heads/$branch:refs/heads/$branch"
+          printf 'Verified repair branch: `%s`\n' "$branch" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report the original regression
+        working-directory: cloudshield
+        run: |
+          if [[ "$(jq -r .status ci-result.json)" == verified ]]; then
+            echo 'A verified repair is available. The pushed commit still failed its checks.'
+            exit 1
+          fi
+
+      - &reports
+        name: Upload selected CloudShield reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cloudshield-reports
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            cloudshield/ci-result.json
+            cloudshield/publication-result.json
+            cloudshield/runs/ci/*/ci.json
+            cloudshield/runs/ci/*/static.json
+            cloudshield/runs/ci/*/judge.json
+            cloudshield/runs/repairs/*/repair.json
+            cloudshield/runs/repairs/*/baseline.json
+            cloudshield/runs/repairs/*/attempt-*.patch
+            cloudshield/runs/repairs/*/attempt-*-review.json
+            cloudshield/runs/repairs/*/attempt-*-deployment.json
+            cloudshield/runs/repairs/*/attempt-*-judge.json
+            cloudshield/runs/repairs/*/attempt-*-verdict.json
+            cloudshield/runs/repairs/*/publication.json
+
+  check-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out the pull request head commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: target
+          persist-credentials: false
+
+      - *runner
+      - *python
+      - *install
+
+      - name: Test the pull request without repair credentials
+        working-directory: cloudshield
+        env:
+          TARGET_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python -m cloudshield ci --repo ../target --revision "$TARGET_SHA" | tee ci-result.json
+
+      - *reports

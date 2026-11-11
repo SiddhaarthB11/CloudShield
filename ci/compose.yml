@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Required}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - app-db-data:/var/lib/postgresql
+
+  backend:
+    build:
+      context: ${APP_BUILD_CONTEXT:?Required}
+      dockerfile: backend/Dockerfile
+      labels:
+        org.opencontainers.image.revision: ${APP_SOURCE_REVISION:?Required}
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PROJECT_NAME: CloudShield CI Target
+      SECRET_KEY: ${APP_SECRET_KEY:?Required}
+      FIRST_SUPERUSER: admin@example.com
+      FIRST_SUPERUSER_PASSWORD: ${APP_ADMIN_PASSWORD:?Required}
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?Required}@db:5432/app
+    labels:
+      io.cloudshield.database-secret-ref: ${APP_DB_SECRET_REF:?Required}
+    ports:
+      - "127.0.0.1:${APP_HOST_PORT:?Required}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/v1/utils/health-check/"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  app-db-data:

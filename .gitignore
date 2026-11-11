@@ -1,0 +1,18 @@
+__pycache__/
+.venv/
+runs/
+*.local.json
+.env*
+
+# Local machines, credentials and runtime state
+.env
+.env.*
+!.env.example
+.aws/
+*.pem
+*.key
+*.p12
+*.pfx
+.vscode/
+.DS_Store
+Thumbs.db

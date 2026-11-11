@@ -1,0 +1,9 @@
+diff --git a/backend/app/api/routes/utils.py b/backend/app/api/routes/utils.py
+--- a/backend/app/api/routes/utils.py
++++ b/backend/app/api/routes/utils.py
+@@ -28,4 +28,4 @@
+ 
+ @router.get("/health-check/")
+ async def health_check() -> bool:
+-    return False
++    return True

@@ -1,0 +1,17 @@
+[Unit]
+Description=CloudShield persistent test and recovery worker
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cloudshield
+WorkingDirectory=/opt/cloudshield
+ExecStart=/opt/cloudshield/.venv/bin/python -m cloudshield worker
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=900
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
